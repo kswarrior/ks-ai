@@ -21,18 +21,19 @@ jobs:
           sudo apt-get install -y cmake build-essential libcurl4-openssl-dev
           npm install -g localtunnel
 
-      - name: Build llama.cpp
+      - name: Build and Install llama.cpp
         run: |
-          git clone https://github.com/ggerganov/llama.cpp.git
+          git clone --depth 1 https://github.com/ggerganov/llama.cpp.git
           cd llama.cpp
-          cmake -B build -DBUILD_SHARED_LIBS=ON
+          cmake -B build -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX=./install
           cmake --build build --config Release -j $(nproc)
-          echo "LLAMA_PATH=$(pwd)" >> $GITHUB_ENV
+          cmake --install build
+          echo "LLAMA_PATH=$(pwd)/install" >> $GITHUB_ENV
 
       - name: Build ai_core
         run: |
-          # Debug: Find exactly where libllama.so is
-          find ${{ env.LLAMA_PATH }} -name "libllama.so"
+          # Debug: Show llama.cpp installation
+          ls -R ${{ env.LLAMA_PATH }}
           cd core_ai
           mkdir build && cd build
           cmake .. -DLLAMA_PATH=${{ env.LLAMA_PATH }}
