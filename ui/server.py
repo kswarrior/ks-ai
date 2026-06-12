@@ -16,12 +16,9 @@ _engine = None
 def get_engine():
     global _engine
     if _engine is None:
-        lib_path = os.environ.get('AI_LIB_PATH')
-        model_path = os.environ.get('AI_MODEL_PATH')
-        if lib_path and model_path:
-            from binding import AIEngine
-            print(f"Initializing AI Engine with model: {model_path}")
-            _engine = AIEngine(lib_path, model_path)
+        from binding import AIEngine
+        # AIEngine now handles its own auto-detection of lib and model
+        _engine = AIEngine()
     return _engine
 
 class TestHandler(http.server.SimpleHTTPRequestHandler):
@@ -44,29 +41,30 @@ class TestHandler(http.server.SimpleHTTPRequestHandler):
 
             try:
                 engine = get_engine()
-
-                if engine:
-                    for token in engine.generate_stream(prompt):
-                        self.wfile.write(f"{len(token):x}\r\n{token}\r\n".encode())
-                        self.wfile.flush()
-                else:
-                    mock_resp = f"<think>Analyzing request: {prompt}</think>This is a mock response because AI_LIB_PATH and AI_MODEL_PATH are not set. Compile the library and set the env vars to use the real engine."
-                    for word in mock_resp.split(' '):
-                        chunk = word + ' '
-                        self.wfile.write(f"{len(chunk):x}\r\n{chunk}\r\n".encode())
-                        self.wfile.flush()
+                for token in engine.generate_stream(prompt):
+                    # HTTP Chunked encoding: [length in hex]\r\n[data]\r\n
+                    chunk = token.encode('utf-8')
+                    self.wfile.write(f"{len(chunk):x}\r\n".encode())
+                    self.wfile.write(chunk)
+                    self.wfile.write(b"\r\n")
+                    self.wfile.flush()
             except Exception as e:
-                err_msg = f"Error: {str(e)}"
-                self.wfile.write(f"{len(err_msg):x}\r\n{err_msg}\r\n".encode())
+                err_msg = f"\n[Backend Error] {str(e)}".encode('utf-8')
+                self.wfile.write(f"{len(err_msg):x}\r\n".encode())
+                self.wfile.write(err_msg)
+                self.wfile.write(b"\r\n")
 
+            # End of chunks
             self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
         else:
             super().do_POST()
 
 if __name__ == "__main__":
     with socketserver.TCPServer(("", PORT), TestHandler) as httpd:
-        print(f"Serving UI at http://localhost:{PORT}")
+        print(f"\033[92m[Server]\033[0m UI running at http://localhost:{PORT}")
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
-            pass
+            print("\nShutting down server...")
+            sys.exit(0)

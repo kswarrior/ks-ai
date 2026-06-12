@@ -4,11 +4,9 @@
 MODEL_PATH="${AI_MODEL_PATH:-}"
 LIB_PATH="${AI_LIB_PATH:-$(pwd)/core_ai/build/libai_core.so}"
 
-# Check if model path is provided
+# Check if model path is provided (Optional, AIEngine will auto-detect if not set)
 if [ -z "$MODEL_PATH" ]; then
-    echo "Error: AI_MODEL_PATH is not set."
-    echo "Usage: AI_MODEL_PATH=/path/to/model.gguf ./run.sh"
-    exit 1
+    echo "AI_MODEL_PATH not set. AIEngine will attempt to auto-detect a .gguf model in models/ or the root directory."
 fi
 
 # Check if model exists
