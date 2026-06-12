@@ -1,0 +1,60 @@
+name: Run AI Inference with Tunnel
+
+on:
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  run-ai:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libcurl4-openssl-dev
+          npm install -g localtunnel
+
+      - name: Build llama.cpp
+        run: |
+          git clone https://github.com/ggerganov/llama.cpp.git
+          cd llama.cpp
+          cmake -B build -DBUILD_SHARED_LIBS=ON
+          cmake --build build --config Release -j $(nproc)
+          echo "LLAMA_PATH=$(pwd)" >> $GITHUB_ENV
+
+      - name: Build ai_core
+        run: |
+          cd core_ai
+          mkdir build && cd build
+          cmake .. -DLLAMA_PATH=${{ env.LLAMA_PATH }}
+          make -j $(nproc)
+
+      - name: Download Small Reasoning Model
+        run: |
+          mkdir -p models
+          # Downloading a very small model for CI demo purposes
+          curl -L -o models/phi-4-mini.gguf https://huggingface.co/unsloth/phi-4-mini-instruct-GGUF/resolve/main/phi-4-mini-instruct-Q4_K_M.gguf?download=true
+
+      - name: Run AI Server and Tunnel
+        run: |
+          # Print the machine's public IP (used as localtunnel password)
+          echo "------------------------------------------------------------"
+          echo "LOCALTUNNEL PASSWORD (Machine IP):"
+          curl -s https://locall.host/ip || curl -s https://ifconfig.me
+          echo ""
+          echo "------------------------------------------------------------"
+
+          # Run the server in the background
+          export AI_MODEL_PATH=$(pwd)/models/phi-4-mini.gguf
+          export AI_LIB_PATH=$(pwd)/core_ai/build/libai_core.so
+          python3 ui/server.py > server.log 2>&1 &
+
+          # Start localtunnel
+          npx localtunnel --port 4040
