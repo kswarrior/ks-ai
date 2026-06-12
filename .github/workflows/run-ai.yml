@@ -31,8 +31,8 @@ jobs:
 
       - name: Build ai_core
         run: |
-          # Debug: List llama.cpp build artifacts
-          ls -R ${{ env.LLAMA_PATH }}/build
+          # Debug: Find exactly where libllama.so is
+          find ${{ env.LLAMA_PATH }} -name "libllama.so"
           cd core_ai
           mkdir build && cd build
           cmake .. -DLLAMA_PATH=${{ env.LLAMA_PATH }}
