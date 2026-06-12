@@ -37,7 +37,7 @@ jobs:
           cd core_ai
           mkdir build && cd build
           cmake .. -DLLAMA_PATH=${{ env.LLAMA_PATH }}
-          make -j $(nproc)
+          make -j $(nproc) VERBOSE=1
 
       - name: Download Small Reasoning Model
         run: |
