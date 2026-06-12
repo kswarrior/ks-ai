@@ -29,7 +29,7 @@ public:
         llama_sampler_chain_add(sampler, llama_sampler_init_top_k(40));
         llama_sampler_chain_add(sampler, llama_sampler_init_top_p(0.95f, 1));
         llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.7f));
-        llama_sampler_chain_add(sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+        llama_sampler_chain_add(sampler, llama_sampler_init_dist(1234));
     }
 
     void batch_add(llama_batch & batch, llama_token id, int32_t pos, const std::vector<llama_seq_id> & seq_ids, bool logits) {
@@ -80,7 +80,7 @@ public:
             }
 
             char buf[128];
-            int n = llama_token_to_piece(model, next_token, buf, sizeof(buf), 0, true);
+            int n = llama_token_to_piece(model, next_token, buf, sizeof(buf) - 1, 0, true);
             if (n > 0) {
                 buf[n] = '\0';
                 token_callback(buf);

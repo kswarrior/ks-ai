@@ -94,8 +94,20 @@ class AIEngine:
         )
         full_prompt = f"{system_prompt}\n\nUser: {prompt}\nAssistant:"
 
+        # Buffer to handle multi-byte UTF-8 characters split across tokens
+        byte_buffer = bytearray()
+
         def callback(token: bytes):
-            token_queue.put(token.decode('utf-8'))
+            nonlocal byte_buffer
+            byte_buffer.extend(token)
+            try:
+                decoded = byte_buffer.decode('utf-8')
+                if decoded:
+                    token_queue.put(decoded)
+                    byte_buffer.clear()
+            except UnicodeDecodeError:
+                # Character might be incomplete, wait for next token
+                pass
 
         callback_func = TOKEN_CALLBACK(callback)
 
