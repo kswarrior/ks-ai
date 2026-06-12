@@ -10,8 +10,8 @@ option(USE_AVX2 "Compile with AVX2 support" ON)
 # If llama.cpp is not installed globally, users should provide LLAMA_PATH
 set(LLAMA_PATH "" CACHE PATH "Path to llama.cpp source/build directory")
 
-find_library(LLAMA_LIB llama HINTS ${LLAMA_PATH})
-find_path(LLAMA_INCLUDE llama.h HINTS ${LLAMA_PATH} PATH_SUFFIXES include)
+find_library(LLAMA_LIB llama HINTS ${LLAMA_PATH} ${LLAMA_PATH}/build ${LLAMA_PATH}/bin)
+find_path(LLAMA_INCLUDE llama.h HINTS ${LLAMA_PATH} ${LLAMA_PATH}/include)
 
 if(NOT LLAMA_LIB OR NOT LLAMA_INCLUDE)
     message(WARNING "llama.cpp libraries not found. Please set LLAMA_PATH.")

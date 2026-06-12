@@ -31,6 +31,8 @@ jobs:
 
       - name: Build ai_core
         run: |
+          # Debug: List llama.cpp build artifacts
+          ls -R ${{ env.LLAMA_PATH }}/build
           cd core_ai
           mkdir build && cd build
           cmake .. -DLLAMA_PATH=${{ env.LLAMA_PATH }}
