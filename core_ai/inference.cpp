@@ -4,6 +4,7 @@
 #include <vector>
 #include <mutex>
 #include <iostream>
+#include <stdexcept>
 
 class InferenceEngine {
 public:
@@ -31,6 +32,17 @@ public:
         llama_sampler_chain_add(sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
     }
 
+    void batch_add(llama_batch & batch, llama_token id, int32_t pos, const std::vector<llama_seq_id> & seq_ids, bool logits) {
+        batch.token[batch.n_tokens] = id;
+        batch.pos[batch.n_tokens] = pos;
+        batch.n_seq_id[batch.n_tokens] = seq_ids.size();
+        for (size_t i = 0; i < seq_ids.size(); ++i) {
+            batch.seq_id[batch.n_tokens][i] = seq_ids[i];
+        }
+        batch.logits[batch.n_tokens] = logits;
+        batch.n_tokens++;
+    }
+
     ~InferenceEngine() {
         if (sampler) llama_sampler_free(sampler);
         if (ctx) llama_free(ctx);
@@ -48,8 +60,7 @@ public:
 
         llama_batch batch = llama_batch_init(tokens.size(), 0, 1);
         for (size_t i = 0; i < tokens.size(); i++) {
-            llama_seq_id seq_id = 0;
-            llama_batch_add(batch, tokens[i], i, 1, &seq_id, i == tokens.size() - 1);
+            batch_add(batch, tokens[i], i, { 0 }, i == tokens.size() - 1);
         }
 
         if (llama_decode(ctx, batch) != 0) {
@@ -76,9 +87,8 @@ public:
             }
 
             // Prepare next token for decoding
-            llama_batch_clear(batch);
-            llama_seq_id seq_id = 0;
-            llama_batch_add(batch, next_token, n_cur, 1, &seq_id, true);
+            batch.n_tokens = 0;
+            batch_add(batch, next_token, n_cur, { 0 }, true);
 
             if (llama_decode(ctx, batch) != 0) {
                 break;

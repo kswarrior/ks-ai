@@ -33,16 +33,24 @@ A high-performance, low-latency AI inference system bridging a native C++ engine
 
 ## Running the Web UI
 
-1. Set the environment variables for the shared library and your GGUF model:
+You can use the provided `run.sh` script to launch the system:
+
+1. Set your model path and run:
+   ```bash
+   AI_MODEL_PATH=/path/to/your/model.gguf ./run.sh
+   ```
+2. Open `http://localhost:4040` in your browser.
+
+Alternatively, manually:
+1. Set the environment variables:
    ```bash
    export AI_LIB_PATH=$(pwd)/core_ai/build/libai_core.so
-   export AI_MODEL_PATH=/path/to/your/model-q4_k_m.gguf
+   export AI_MODEL_PATH=/path/to/your/model.gguf
    ```
 2. Run the server:
    ```bash
    python3 ui/server.py
    ```
-3. Open `http://localhost:4040` in your browser.
 
 ## Features
 

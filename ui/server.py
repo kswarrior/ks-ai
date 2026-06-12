@@ -10,6 +10,20 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'c
 PORT = 4040
 DIRECTORY = "ui"
 
+# Global engine instance to avoid reloading model on every request
+_engine = None
+
+def get_engine():
+    global _engine
+    if _engine is None:
+        lib_path = os.environ.get('AI_LIB_PATH')
+        model_path = os.environ.get('AI_MODEL_PATH')
+        if lib_path and model_path:
+            from binding import AIEngine
+            print(f"Initializing AI Engine with model: {model_path}")
+            _engine = AIEngine(lib_path, model_path)
+    return _engine
+
 class TestHandler(http.server.SimpleHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -28,17 +42,10 @@ class TestHandler(http.server.SimpleHTTPRequestHandler):
             self.send_header('Transfer-Encoding', 'chunked')
             self.end_headers()
 
-            # For testing purposes, if engine is not available, return mock response
-            # In production, you'd initialize AIEngine here or globally
-
             try:
-                # Attempt to use the actual engine if configured via environment variables
-                lib_path = os.environ.get('AI_LIB_PATH')
-                model_path = os.environ.get('AI_MODEL_PATH')
+                engine = get_engine()
 
-                if lib_path and model_path:
-                    from binding import AIEngine
-                    engine = AIEngine(lib_path, model_path)
+                if engine:
                     for token in engine.generate_stream(prompt):
                         self.wfile.write(f"{len(token):x}\r\n{token}\r\n".encode())
                         self.wfile.flush()
