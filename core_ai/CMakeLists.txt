@@ -12,7 +12,7 @@ set(LLAMA_PATH "" CACHE PATH "Path to llama.cpp source/build directory")
 
 find_library(LLAMA_LIB llama
     HINTS ${LLAMA_PATH}
-    PATH_SUFFIXES lib lib64 build build/bin build/src bin
+    PATH_SUFFIXES lib lib64 build/bin build/src bin
 )
 
 find_path(LLAMA_INCLUDE llama.h
@@ -20,15 +20,17 @@ find_path(LLAMA_INCLUDE llama.h
     PATH_SUFFIXES include common
 )
 
-# ggml headers are often in a separate directory in newer llama.cpp versions
+# Search for ggml.h in source and install locations
 find_path(GGML_INCLUDE ggml.h
     HINTS ${LLAMA_PATH}
-    PATH_SUFFIXES include common
+    PATH_SUFFIXES include common ggml/include
 )
 
 if(NOT LLAMA_LIB OR NOT LLAMA_INCLUDE OR NOT GGML_INCLUDE)
-    message(WARNING "llama.cpp libraries not found. LLAMA_LIB: ${LLAMA_LIB}, LLAMA_INCLUDE: ${LLAMA_INCLUDE}")
-    message(FATAL_ERROR "Could not find llama.cpp. Please set LLAMA_PATH correctly.")
+    message(STATUS "LLAMA_LIB: ${LLAMA_LIB}")
+    message(STATUS "LLAMA_INCLUDE: ${LLAMA_INCLUDE}")
+    message(STATUS "GGML_INCLUDE: ${GGML_INCLUDE}")
+    message(FATAL_ERROR "Could not find llama.cpp dependencies. Please set LLAMA_PATH correctly.")
 endif()
 
 message(STATUS "Found LLAMA_LIB: ${LLAMA_LIB}")
@@ -51,5 +53,4 @@ endif()
 
 if(USE_CUDA)
     add_definitions(-DGGML_USE_CUDA)
-    # CUDA linking would go here if specific CUDA libs are needed beyond what llama.cpp provides
 endif()

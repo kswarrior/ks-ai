@@ -9,11 +9,10 @@
 class InferenceEngine {
 public:
     InferenceEngine(const char* model_path, int n_ctx) {
-        // Initialize global backend once
         llama_backend_init();
 
         llama_model_params model_params = llama_model_default_params();
-        model = llama_load_model_from_file(model_path, model_params);
+        model = llama_model_load_from_file(model_path, model_params);
         if (!model) {
             throw std::runtime_error("Failed to load model");
         }
@@ -21,13 +20,12 @@ public:
         llama_context_params ctx_params = llama_context_default_params();
         ctx_params.n_ctx = n_ctx;
         ctx_params.n_batch = 512;
-        ctx = llama_new_context_with_model(model, ctx_params);
+        ctx = llama_init_from_model(model, ctx_params);
         if (!ctx) {
-            llama_free_model(model);
+            llama_model_free(model);
             throw std::runtime_error("Failed to create context");
         }
 
-        // Initialize sampler chain
         sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
         llama_sampler_chain_add(sampler, llama_sampler_init_top_k(40));
         llama_sampler_chain_add(sampler, llama_sampler_init_top_p(0.95f, 1));
@@ -49,15 +47,14 @@ public:
     ~InferenceEngine() {
         if (sampler) llama_sampler_free(sampler);
         if (ctx) llama_free(ctx);
-        if (model) llama_free_model(model);
+        if (model) llama_model_free(model);
         llama_backend_free();
     }
 
     void infer(const char* prompt, void (*token_callback)(const char*)) {
         std::lock_guard<std::mutex> lock(engine_mutex);
 
-        // Clear context for new generation
-        llama_kv_cache_clear(ctx);
+        llama_memory_clear(llama_get_memory(ctx), true);
 
         const struct llama_vocab * vocab = llama_model_get_vocab(model);
         std::vector<llama_token> tokens = tokenize(vocab, prompt, true);
@@ -90,7 +87,6 @@ public:
                 token_callback(buf);
             }
 
-            // Prepare next token for decoding
             batch.n_tokens = 0;
             batch_add(batch, next_token, n_cur, { 0 }, true);
 
@@ -106,9 +102,9 @@ public:
     }
 
 private:
-    llama_model* model = nullptr;
-    llama_context* ctx = nullptr;
-    llama_sampler* sampler = nullptr;
+    struct llama_model* model = nullptr;
+    struct llama_context* ctx = nullptr;
+    struct llama_sampler* sampler = nullptr;
     std::mutex engine_mutex;
 
     std::vector<llama_token> tokenize(const struct llama_vocab * vocab, const std::string& text, bool add_special) {
