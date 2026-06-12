@@ -72,15 +72,17 @@ public:
         int n_decode = 0;
         const int max_tokens = llama_n_ctx(ctx) - tokens.size();
 
+        const struct llama_vocab * vocab = llama_model_get_vocab(model);
+
         while (n_decode < max_tokens) {
             llama_token next_token = llama_sampler_sample(sampler, ctx, -1);
 
-            if (llama_token_is_eog(model, next_token)) {
+            if (llama_token_is_eog(vocab, next_token)) {
                 break;
             }
 
             char buf[128];
-            int n = llama_token_to_piece(model, next_token, buf, sizeof(buf) - 1, 0, true);
+            int n = llama_token_to_piece(vocab, next_token, buf, sizeof(buf) - 1, 0, true);
             if (n > 0) {
                 buf[n] = '\0';
                 token_callback(buf);
@@ -108,12 +110,13 @@ private:
     std::mutex engine_mutex;
 
     std::vector<llama_token> tokenize(const std::string& text, bool add_bos) {
+        const struct llama_vocab * vocab = llama_model_get_vocab(model);
         int n_tokens = text.length() + (add_bos ? 1 : 0);
         std::vector<llama_token> res(n_tokens);
-        n_tokens = llama_tokenize(model, text.c_str(), text.length(), res.data(), res.size(), add_bos, true);
+        n_tokens = llama_tokenize(vocab, text.c_str(), text.length(), res.data(), res.size(), add_bos, true);
         if (n_tokens < 0) {
             res.resize(-n_tokens);
-            n_tokens = llama_tokenize(model, text.c_str(), text.length(), res.data(), res.size(), add_bos, true);
+            n_tokens = llama_tokenize(vocab, text.c_str(), text.length(), res.data(), res.size(), add_bos, true);
         } else {
             res.resize(n_tokens);
         }
