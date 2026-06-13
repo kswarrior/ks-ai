@@ -54,15 +54,19 @@
 
                 const reader = res.body.getReader();
                 const decoder = new TextDecoder();
+                let buffer = "";
 
                 while (true) {
                     const {done, value} = await reader.read();
                     if (done) break;
-                    const chunk = decoder.decode(value);
-                    const lines = chunk.split('\n');
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            fullText += line.slice(6);
+
+                    buffer += decoder.decode(value, {stream: true});
+                    const parts = buffer.split('\n\n');
+                    buffer = parts.pop();
+
+                    for (const part of parts) {
+                        if (part.startsWith('data: ')) {
+                            fullText += part.slice(6);
                             aiDiv.innerHTML = fullText.replace(/<think>([\s\S]*?)<\/think>/g, '<think>$1</think>');
                             chat.scrollTop = chat.scrollHeight;
                         }
