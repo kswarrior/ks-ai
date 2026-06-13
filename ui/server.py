@@ -4,21 +4,22 @@ import socketserver
 import os
 import sys
 
-# Add core_ai to path so we can import binding
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'core_ai')))
 
 PORT = 4040
 DIRECTORY = "ui"
 
-# Global engine instance to avoid reloading model on every request
 _engine = None
 
 def get_engine():
     global _engine
     if _engine is None:
-        from binding import AIEngine
-        # AIEngine now handles its own auto-detection of lib and model
-        _engine = AIEngine()
+        try:
+            from binding import AIEngine
+            print("\033[92m[Server]\033[0m Initializing AIEngine...")
+            _engine = AIEngine()
+        except Exception as e:
+            print(f"\033[91m[Server Error]\033[0m {e}")
     return _engine
 
 class TestHandler(http.server.SimpleHTTPRequestHandler):
@@ -29,42 +30,49 @@ class TestHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == '/api/generate':
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            data = json.loads(post_data)
-            prompt = data.get('prompt', '')
-
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/plain')
-            self.send_header('Transfer-Encoding', 'chunked')
-            self.end_headers()
-
             try:
-                engine = get_engine()
-                for token in engine.generate_stream(prompt):
-                    # HTTP Chunked encoding: [length in hex]\r\n[data]\r\n
-                    chunk = token.encode('utf-8')
-                    self.wfile.write(f"{len(chunk):x}\r\n".encode())
-                    self.wfile.write(chunk)
-                    self.wfile.write(b"\r\n")
-                    self.wfile.flush()
-            except Exception as e:
-                err_msg = f"\n[Backend Error] {str(e)}".encode('utf-8')
-                self.wfile.write(f"{len(err_msg):x}\r\n".encode())
-                self.wfile.write(err_msg)
-                self.wfile.write(b"\r\n")
+                content_length = int(self.headers['Content-Length'])
+                post_data = self.rfile.read(content_length)
+                data = json.loads(post_data)
+                prompt = data.get('prompt', '')
 
-            # End of chunks
-            self.wfile.write(b"0\r\n\r\n")
-            self.wfile.flush()
+                print(f"\033[92m[Server]\033[0m New request: {prompt[:30]}...")
+
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                self.send_header('Transfer-Encoding', 'chunked')
+                self.end_headers()
+
+                engine = get_engine()
+                if engine:
+                    count = 0
+                    for token in engine.generate_stream(prompt):
+                        chunk = token.encode('utf-8')
+                        self.wfile.write(f"{len(chunk):x}\r\n".encode())
+                        self.wfile.write(chunk)
+                        self.wfile.write(b"\r\n")
+                        self.wfile.flush()
+                        count += 1
+                    print(f"\033[92m[Server]\033[0m Stream finished. {count} tokens sent.")
+                else:
+                    err = "Error: AI engine not initialized.".encode('utf-8')
+                    self.wfile.write(f"{len(err):x}\r\n{err}\r\n".encode())
+
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except Exception as e:
+                print(f"\033[91m[Server Error]\033[0m {e}")
         else:
             super().do_POST()
 
 if __name__ == "__main__":
+    # Ensure engine is loaded before serving
+    get_engine()
+
     with socketserver.TCPServer(("", PORT), TestHandler) as httpd:
-        print(f"\033[92m[Server]\033[0m UI running at http://localhost:{PORT}")
+        print(f"\033[92m[Server]\033[0m Listening at http://localhost:{PORT}")
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
-            print("\nShutting down server...")
+            print("\nShutting down.")
             sys.exit(0)

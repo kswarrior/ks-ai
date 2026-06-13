@@ -28,19 +28,21 @@ jobs:
           cmake -B build -DBUILD_SHARED_LIBS=ON -DCMAKE_INSTALL_PREFIX=$(pwd)/install
           cmake --build build --config Release -j $(nproc)
           cmake --install build
-          echo "LLAMA_PATH=$(pwd)" >> $GITHUB_ENV
+          echo "LLAMA_PATH=$(pwd)/install" >> $GITHUB_ENV
 
       - name: Build ai_core
         run: |
           cd core_ai
           mkdir build && cd build
           cmake .. -DLLAMA_PATH=${{ env.LLAMA_PATH }}
-          make -j $(nproc) VERBOSE=1
+          make -j $(nproc)
 
-      - name: Download Small Reasoning Model
+      - name: Download Model
         run: |
           mkdir -p models
+          # Use a very small model for testing
           curl -L -o models/phi-4-mini.gguf https://huggingface.co/unsloth/phi-4-mini-instruct-GGUF/resolve/main/phi-4-mini-instruct-Q4_K_M.gguf?download=true
+          ls -lh models/
 
       - name: Run AI Server and Tunnel
         run: |
@@ -53,9 +55,12 @@ jobs:
           export AI_MODEL_PATH=$(pwd)/models/phi-4-mini.gguf
           export AI_LIB_PATH=$(pwd)/core_ai/build/libai_core.so
 
-          # Find libllama.so path for runtime
-          LIBLLAMA_DIR=$(find ${{ env.LLAMA_PATH }} -name "libllama.so" -exec dirname {} \; | head -n 1)
-          export LD_LIBRARY_PATH=$LIBLLAMA_DIR:$LD_LIBRARY_PATH
+          # Crucial: Ensure LD_LIBRARY_PATH includes libllama.so
+          export LD_LIBRARY_PATH=${{ env.LLAMA_PATH }}/lib:${{ env.LLAMA_PATH }}/lib64:$LD_LIBRARY_PATH
 
-          python3 ui/server.py > server.log 2>&1 &
+          python3 ui/server.py &
+
+          # Allow some time for engine to load
+          sleep 10
+
           npx localtunnel --port 4040
