@@ -1,0 +1,5 @@
+target/
+core_ai/target/
+node_modules/
+*.log
+.DS_Store
