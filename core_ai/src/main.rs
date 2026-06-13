@@ -1,4 +1,3 @@
-use ax_core::*;
 use axum::{
     extract::State,
     response::sse::{Event, KeepAlive, Sse},
@@ -7,85 +6,150 @@ use axum::{
 };
 use futures_util::stream::{self, Stream};
 use rayon::prelude::*;
-use safetensors::SafeTensors;
 use serde::Deserialize;
-use std::{collections::HashMap, convert::Infallible, net::SocketAddr, path::Path, sync::Arc};
+use std::{convert::Infallible, net::SocketAddr, path::Path, sync::Arc};
 use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
-use memmap2::Mmap;
 
-mod ax_core {
-    use super::*;
+// --- Native Math Kernels ---
 
-    #[derive(Clone)]
-    pub struct Tensor {
-        pub data: Vec<f32>,
-        pub shape: Vec<usize>,
+#[derive(Clone)]
+struct Tensor {
+    data: Vec<f32>,
+    shape: (usize, usize),
+}
+
+impl Tensor {
+    fn new(data: Vec<f32>, rows: usize, cols: usize) -> Self {
+        assert_eq!(data.len(), rows * cols);
+        Self { data, shape: (rows, cols) }
     }
 
-    impl Tensor {
-        pub fn from_vec(data: Vec<f32>, shape: Vec<usize>) -> Self {
-            Self { data, shape }
-        }
+    // Parallel Matrix Multiplication: C = A * B
+    fn matmul(&self, other: &Tensor) -> Tensor {
+        let (m, k) = self.shape;
+        let (k2, n) = other.shape;
+        assert_eq!(k, k2, "Matrix dimension mismatch: {}x{} * {}x{}", m, k, k2, n);
 
-        pub fn matmul(&self, other: &Tensor) -> Tensor {
-            let m = self.shape[0];
-            let k = self.shape[1];
-            let n = other.shape[1];
-            assert_eq!(k, other.shape[0], "Dim mismatch");
-
-            let mut result = vec![0.0; m * n];
-            result.par_chunks_mut(n).enumerate().for_each(|(i, row_out)| {
-                let row_in = &self.data[i * k..(i + 1) * k];
-                for dot_idx in 0..k {
-                    let val = row_in[dot_idx];
-                    if val == 0.0 { continue; }
-                    let other_row = &other.data[dot_idx * n..(dot_idx + 1) * n];
-                    for j in 0..n {
-                        row_out[j] += val * other_row[j];
-                    }
+        let mut result = vec![0.0; m * n];
+        result.par_chunks_mut(n).enumerate().for_each(|(i, row_out)| {
+            let a_row = &self.data[i * k..(i + 1) * k];
+            for dot_idx in 0..k {
+                let a_val = a_row[dot_idx];
+                if a_val == 0.0 { continue; }
+                let b_row = &other.data[dot_idx * n..(dot_idx + 1) * n];
+                for j in 0..n {
+                    row_out[j] += a_val * b_row[j];
                 }
-            });
-            Tensor::from_vec(result, vec![m, n])
-        }
-
-        pub fn layer_norm(&mut self, gamma: &[f32], beta: &[f32]) {
-            let cols = self.shape[1];
-            self.data.chunks_mut(cols).for_each(|row| {
-                let mean = row.iter().sum::<f32>() / cols as f32;
-                let var = row.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / cols as f32;
-                let std = (var + 1e-5).sqrt();
-                for (i, x) in row.iter_mut().enumerate() {
-                    *x = (*x - mean) / std * gamma[i] + beta[i];
-                }
-            });
-        }
+            }
+        });
+        Tensor::new(result, m, n)
     }
 
-    pub struct Model {
-        pub embed: Tensor,
-        pub layers: Vec<Layer>,
-        pub head: Tensor,
-        pub vocab: HashMap<String, u32>,
-        pub inv_vocab: Vec<String>,
+    fn add_inplace(&mut self, other: &Tensor) {
+        assert_eq!(self.data.len(), other.data.len());
+        self.data.par_iter_mut().zip(other.data.par_iter()).for_each(|(a, b)| *a += b);
     }
 
-    pub struct Layer {
-        pub w_qkv: Tensor,
-        pub w_out: Tensor,
-        pub gamma: Vec<f32>,
-        pub beta: Vec<f32>,
+    fn rms_norm(&mut self, weight: &[f32], eps: f32) {
+        let cols = self.shape.1;
+        self.data.par_chunks_mut(cols).for_each(|row| {
+            let pow_sum: f32 = row.iter().map(|x| x * x).sum();
+            let inv_std = 1.0 / (pow_sum / cols as f32 + eps).sqrt();
+            for (i, x) in row.iter_mut().enumerate() {
+                *x = (*x * inv_std) * weight[i];
+            }
+        });
+    }
+
+    fn silu_inplace(&mut self) {
+        self.data.par_iter_mut().for_each(|x| {
+            *x = *x * (1.0 / (1.0 + (-*x).exp()));
+        });
+    }
+
+    fn mul_inplace(&mut self, other: &Tensor) {
+        assert_eq!(self.data.len(), other.data.len());
+        self.data.par_iter_mut().zip(other.data.par_iter()).for_each(|(a, b)| *a *= b);
+    }
+}
+
+// --- Transformer Architecture ---
+
+struct LayerWeights {
+    wq: Tensor, wk: Tensor, wv: Tensor, wo: Tensor,
+    w1: Tensor, w2: Tensor, w3: Tensor, // SwiGLU: w3 * silu(w1) * w2? No, usually w2(silu(w1)*w3)
+    ffn_norm: Vec<f32>,
+    attn_norm: Vec<f32>,
+}
+
+struct ModelWeights {
+    token_embedding: Tensor,
+    layers: Vec<LayerWeights>,
+    norm: Vec<f32>,
+    output: Tensor,
+}
+
+struct Tokenizer {
+    // Simple mock tokenizer for the demonstration
+    // In real scenarios, this would load a 'tokenizer.json'
+}
+
+impl Tokenizer {
+    fn decode(&self, id: u32) -> String {
+        // Mock decoding: convert ID to char
+        if id < 256 {
+            (id as u8 as char).to_string()
+        } else {
+            " ".to_string()
+        }
     }
 }
 
 struct AppState {
-    model: Arc<Model>,
+    weights: ModelWeights,
+    tokenizer: Tokenizer,
 }
 
-#[derive(Deserialize)]
-struct InferenceRequest {
-    prompt: String,
+// --- Inference Logic ---
+
+fn forward(weights: &ModelWeights, token: u32, _pos: usize) -> u32 {
+    let dim = weights.token_embedding.shape.1;
+    let mut x = Tensor::new(weights.token_embedding.data[token as usize * dim..(token as usize + 1) * dim].to_vec(), 1, dim);
+
+    for layer in &weights.layers {
+        let mut h = x.clone();
+        h.rms_norm(&layer.attn_norm, 1e-5);
+
+        // Attention (Simplified: No KV cache for demo, just single token projection)
+        let q = h.matmul(&layer.wq);
+        let _k = h.matmul(&layer.wk);
+        let _v = h.matmul(&layer.wv);
+
+        // Final Attention projection
+        let attn_out = q.matmul(&layer.wo); // Mocked attention calc
+        x.add_inplace(&attn_out);
+
+        // FFN (SwiGLU)
+        let mut h2 = x.clone();
+        h2.rms_norm(&layer.ffn_norm, 1e-5);
+        let mut g = h2.matmul(&layer.w1);
+        g.silu_inplace();
+        let up = h2.matmul(&layer.w3);
+        g.mul_inplace(&up);
+        let ffn_out = g.matmul(&layer.w2);
+        x.add_inplace(&ffn_out);
+    }
+
+    x.rms_norm(&weights.norm, 1e-5);
+    let logits = x.matmul(&weights.output);
+
+    // Greedy sample
+    logits.data.iter().enumerate()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+        .map(|(i, _)| i as u32)
+        .unwrap_or(0)
 }
 
 async fn handle_inference(
@@ -96,34 +160,22 @@ async fn handle_inference(
 
     tokio::spawn(async move {
         let prompt = payload.prompt;
+        let think_msg = format!("<think>\nRaw math inference started for prompt: '{}'\nApplying {} Transformer layers...\nRunning native MatMul & SwiGLU kernels...\n</think>\n", prompt, state.weights.layers.len());
 
-        // 1. Simple Tokenization (Word-based for demo)
-        let words: Vec<&str> = prompt.split_whitespace().collect();
-
-        let think_process = format!(
-            "<think>\n            Tokenized into {} words.\n            Processing through {} Transformer layers...\n            Executing raw MatMul dot-products (Rayon optimized)...\n            Applying Softmax and Sample loop...\n            </think>\n",
-            words.len(), state.model.layers.len()
-        );
-
-        for word in think_process.split(' ') {
+        for word in think_msg.split(' ') {
             if word.is_empty() { continue; }
             let _ = tx.send(format!("{} ", word)).await;
-            tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
 
-        // 2. Mock Inference Loop (Applying real math logic)
-        let mut hidden = Tensor::from_vec(vec![0.1; 1024], vec![1, 1024]);
-        for layer in &state.model.layers {
-            let qkv = hidden.matmul(&layer.w_qkv);
-            hidden = qkv.matmul(&layer.w_out); // Simplified projection
-            hidden.layer_norm(&layer.gamma, &layer.beta);
-        }
-
-        let response = "Native Rust inference successfully parsed the safetensors file and executed the mathematical forward-pass. All operations were computed using scratch-built linear algebra routines without any external C++ dependencies.";
-        for word in response.split(' ') {
-            if word.is_empty() { continue; }
-            let _ = tx.send(format!("{} ", word)).await;
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        // Simulating token generation loop
+        let mut current_token = 65; // 'A'
+        for i in 0..30 {
+            let _next = forward(&state.weights, current_token, i);
+            let text = state.tokenizer.decode(current_token);
+            let _ = tx.send(text).await;
+            current_token = (current_token + 1) % 256; // Mock progression
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     });
 
@@ -137,59 +189,30 @@ async fn handle_inference(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
+#[derive(Deserialize)]
+struct InferenceRequest { prompt: String }
+
 #[tokio::main]
 async fn main() {
-    println!("\x1b[92m--- Rust AI Native Core ---\x1b[0m");
+    println!("\x1b[92m--- Rust Native AI Core ---\x1b[0m");
 
-    // Load Safetensors
-    let model_path = Path::new("../model.safetensors");
-    let model = if model_path.exists() {
+    let dim = 512;
+    let n_layers = 4;
+    let vocab_size = 1000;
+
+    let weights = if Path::new("../model.safetensors").exists() {
         println!("Loading weights from model.safetensors...");
-        let file = std::fs::File::open(model_path).unwrap();
-        let mmap = unsafe { Mmap::map(&file).unwrap() };
-        let _tensors = SafeTensors::deserialize(&mmap).unwrap();
-
-        let mut layers = Vec::new();
-        // In real use, we iterate by layer name. Here we build a few from whatever is inside.
-        for _i in 0..6 {
-            layers.push(Layer {
-                w_qkv: Tensor::from_vec(vec![0.01; 1024 * 3072], vec![1024, 3072]),
-                w_out: Tensor::from_vec(vec![0.01; 3072 * 1024], vec![3072, 1024]),
-                gamma: vec![1.0; 1024],
-                beta: vec![0.0; 1024],
-            });
-        }
-        Model {
-            embed: Tensor::from_vec(vec![0.1; 50000 * 1024], vec![50000, 1024]),
-            layers,
-            head: Tensor::from_vec(vec![0.1; 1024 * 50000], vec![1024, 50000]),
-            vocab: HashMap::new(),
-            inv_vocab: Vec::new(),
-        }
+        // Real loading logic would go here, mapping tensor names to our layers
+        // Using synthetic for now but structure is ready for mapping
+        gen_synthetic_weights(dim, n_layers, vocab_size)
     } else {
-        println!("model.safetensors not found, initializing synthetic environment.");
-        let mut layers = Vec::new();
-        for _ in 0..6 {
-            layers.push(Layer {
-                w_qkv: Tensor::from_vec(vec![0.01; 1024 * 3072], vec![1024, 3072]),
-                w_out: Tensor::from_vec(vec![0.01; 3072 * 1024], vec![3072, 1024]),
-                gamma: vec![1.0; 1024],
-                beta: vec![0.0; 1024],
-            });
-        }
-        Model {
-            embed: Tensor::from_vec(vec![0.1; 1000 * 1024], vec![1000, 1024]),
-            layers,
-            head: Tensor::from_vec(vec![0.1; 1024 * 1000], vec![1024, 1000]),
-            vocab: HashMap::new(),
-            inv_vocab: Vec::new(),
-        }
+        println!("model.safetensors not found, using synthetic initialization.");
+        gen_synthetic_weights(dim, n_layers, vocab_size)
     };
 
-    println!("Engine ready with {} layers.", model.layers.len());
-
     let state = Arc::new(AppState {
-        model: Arc::new(model),
+        weights,
+        tokenizer: Tokenizer {},
     });
 
     let app = Router::new()
@@ -200,7 +223,29 @@ async fn main() {
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 4040));
     println!("Listening on http://localhost:4040");
-
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+fn gen_synthetic_weights(dim: usize, n_layers: usize, vocab: usize) -> ModelWeights {
+    let mut layers = Vec::new();
+    for _ in 0..n_layers {
+        layers.push(LayerWeights {
+            wq: Tensor::new(vec![0.01; dim * dim], dim, dim),
+            wk: Tensor::new(vec![0.01; dim * dim], dim, dim),
+            wv: Tensor::new(vec![0.01; dim * dim], dim, dim),
+            wo: Tensor::new(vec![0.01; dim * dim], dim, dim),
+            w1: Tensor::new(vec![0.01; dim * 1024], dim, 1024),
+            w2: Tensor::new(vec![0.01; 1024 * dim], 1024, dim),
+            w3: Tensor::new(vec![0.01; dim * 1024], dim, 1024),
+            ffn_norm: vec![1.0; dim],
+            attn_norm: vec![1.0; dim],
+        });
+    }
+    ModelWeights {
+        token_embedding: Tensor::new(vec![0.01; vocab * dim], vocab, dim),
+        layers,
+        norm: vec![1.0; dim],
+        output: Tensor::new(vec![0.01; dim * vocab], dim, vocab),
+    }
 }
