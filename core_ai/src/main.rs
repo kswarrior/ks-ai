@@ -76,10 +76,12 @@ impl Tensor {
         self.data.par_iter_mut().zip(other.data.par_iter()).for_each(|(a, b)| *a *= b);
     }
 
+    #[allow(dead_code)]
     fn scale_inplace(&mut self, scale: f32) {
         self.data.par_iter_mut().for_each(|x| *x *= scale);
     }
 
+    #[allow(dead_code)]
     fn softmax_inplace(&mut self) {
         let cols = self.shape.1;
         self.data.par_chunks_mut(cols).for_each(|row| {
