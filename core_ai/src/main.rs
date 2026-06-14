@@ -285,25 +285,52 @@ async fn handle_inference(
 
         // Generation loop
         let max_new_tokens = 50;
+        let mut generated_tokens = Vec::new();
+        let temperature = 0.8f32;
+        let repetition_penalty = 1.1f32;
+
         for i in 0..max_new_tokens {
-            let logits = forward(&state.weights, last_token, pos, &mut kv_cache);
+            let mut logits = forward(&state.weights, last_token, pos, &mut kv_cache);
 
-            // Simple sampling with a bit of randomness if multiple logits are high
-            let mut next_token = 0;
-            let mut max_logit = f32::NEG_INFINITY;
-
-            // Still doing greedy but random weights should make it interesting.
-            // For true variety, we could add temperature sampling here.
-            for (idx, &logit) in logits.data.iter().enumerate() {
-                if logit > max_logit {
-                    max_logit = logit;
-                    next_token = idx as u32;
+            // Apply repetition penalty
+            for &prev_token in &generated_tokens {
+                let val = logits.data[prev_token as usize];
+                if val < 0.0 {
+                    logits.data[prev_token as usize] = val * repetition_penalty;
+                } else {
+                    logits.data[prev_token as usize] = val / repetition_penalty;
                 }
             }
+
+            // Apply temperature and sample
+            let mut exp_sum = 0.0;
+            let mut probs = Vec::with_capacity(logits.data.len());
+            let max_l = logits.data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+
+            for &l in &logits.data {
+                let p = ((l - max_l) / temperature).exp();
+                probs.push(p);
+                exp_sum += p;
+            }
+
+            let next_token = {
+                let mut rng = rand::thread_rng();
+                let mut r = rng.gen::<f32>() * exp_sum;
+                let mut token = 0;
+                for (idx, &p) in probs.iter().enumerate() {
+                    r -= p;
+                    if r <= 0.0 {
+                        token = idx as u32;
+                        break;
+                    }
+                }
+                token
+            };
 
             if next_token == 1 { // EOS
                 break;
             }
+            generated_tokens.push(next_token);
 
             let decoded = state.tokenizer.decode(&[next_token], true).expect("Failed to decode token");
             if !decoded.is_empty() {
