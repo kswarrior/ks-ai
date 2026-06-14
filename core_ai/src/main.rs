@@ -11,6 +11,7 @@ use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 use tokio::sync::mpsc;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
+use rand::Rng;
 
 #[derive(Clone)]
 struct Tensor {
@@ -272,6 +273,7 @@ async fn handle_inference(
         let mut last_token = 0;
 
         // Prefill
+        let _ = tx.send("<think>\nInference engine active. Processing prompt...\n</think>\n".to_string()).await;
         for &token in &tokens[..tokens.len().saturating_sub(1)] {
             forward(&state.weights, token, pos, &mut kv_cache);
             pos += 1;
@@ -283,12 +285,15 @@ async fn handle_inference(
 
         // Generation loop
         let max_new_tokens = 50;
-        for _ in 0..max_new_tokens {
+        for i in 0..max_new_tokens {
             let logits = forward(&state.weights, last_token, pos, &mut kv_cache);
 
-            // Greedy sampling
-            let mut max_logit = f32::NEG_INFINITY;
+            // Simple sampling with a bit of randomness if multiple logits are high
             let mut next_token = 0;
+            let mut max_logit = f32::NEG_INFINITY;
+
+            // Still doing greedy but random weights should make it interesting.
+            // For true variety, we could add temperature sampling here.
             for (idx, &logit) in logits.data.iter().enumerate() {
                 if logit > max_logit {
                     max_logit = logit;
@@ -301,7 +306,13 @@ async fn handle_inference(
             }
 
             let decoded = state.tokenizer.decode(&[next_token], true).expect("Failed to decode token");
-            let _ = tx.send(decoded).await;
+            if !decoded.is_empty() {
+                let _ = tx.send(decoded.clone()).await;
+                println!("Token {}: {} ({})", i, decoded, next_token);
+            } else {
+                // If decoding is empty (e.g. unknown or special token not filtered), send placeholder
+                let _ = tx.send(" ".to_string()).await;
+            }
 
             last_token = next_token;
             pos += 1;
@@ -328,39 +339,45 @@ struct InferenceRequest { prompt: String }
 async fn main() {
     println!("\x1b[92m--- Rust Native AI Core ---\x1b[0m");
 
+    let tokenizer = if std::path::Path::new("tokenizer.json").exists() {
+        tokenizers::Tokenizer::from_file("tokenizer.json").expect("Failed to load tokenizer.json")
+    } else {
+        panic!("tokenizer.json not found! Please provide a tokenizer.json file.");
+    };
+
     let weights = if std::path::Path::new("model.safetensors").exists() {
         ModelWeights::load("model.safetensors")
     } else {
-        println!("model.safetensors not found, initializing with dummy weights");
+        println!("model.safetensors not found, initializing with random dummy weights");
         let dim = 512;
         let n_layers = 6;
-        let vocab_size = 1000;
+        let vocab_size = tokenizer.get_vocab_size(true);
+        let mut rng = rand::thread_rng();
+        let mut random_tensor = |r, c| {
+            let data: Vec<f32> = (0..r * c).map(|_| rng.gen_range(-0.1..0.1)).collect();
+            Tensor::new(data, r, c)
+        };
+
         let mut layers = Vec::new();
         for _ in 0..n_layers {
             layers.push(LayerWeights {
-                wq: Tensor::new(vec![0.01; dim * dim], dim, dim),
-                wk: Tensor::new(vec![0.01; dim * dim], dim, dim),
-                wv: Tensor::new(vec![0.01; dim * dim], dim, dim),
-                wo: Tensor::new(vec![0.01; dim * dim], dim, dim),
-                w1: Tensor::new(vec![0.01; dim * 1024], dim, 1024),
-                w2: Tensor::new(vec![0.01; 1024 * dim], 1024, dim),
-                w3: Tensor::new(vec![0.01; dim * 1024], dim, 1024),
+                wq: random_tensor(dim, dim),
+                wk: random_tensor(dim, dim),
+                wv: random_tensor(dim, dim),
+                wo: random_tensor(dim, dim),
+                w1: random_tensor(dim, 1024),
+                w2: random_tensor(1024, dim),
+                w3: random_tensor(dim, 1024),
                 ffn_norm: vec![1.0; dim],
                 attn_norm: vec![1.0; dim],
             });
         }
         ModelWeights {
-            token_embedding: Tensor::new(vec![0.01; vocab_size * dim], vocab_size, dim),
+            token_embedding: random_tensor(vocab_size, dim),
             layers,
             norm: vec![1.0; dim],
-            output: Tensor::new(vec![0.01; dim * vocab_size], dim, vocab_size),
+            output: random_tensor(dim, vocab_size),
         }
-    };
-
-    let tokenizer = if std::path::Path::new("tokenizer.json").exists() {
-        tokenizers::Tokenizer::from_file("tokenizer.json").expect("Failed to load tokenizer.json")
-    } else {
-        panic!("tokenizer.json not found! Please provide a tokenizer.json file.");
     };
 
     let state = Arc::new(AppState { weights, tokenizer });
